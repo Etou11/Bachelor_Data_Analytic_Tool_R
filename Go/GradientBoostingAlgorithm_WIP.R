@@ -2,31 +2,33 @@ library(xgboost)
 library(readr)
 library(dplyr)
 library(Metrics)
+library(MLmetrics)
 library(foreach)
 library(doParallel)
 library(lubridate)
 library(plotly)
 library(htmlwidgets)
 library(pandoc)
-library(caret)
 
 # Settings
-count_iterations <- 2
+count_iterations <- 3
+selected_scenario <- 3
 
-# Model training settings
 default_max_depth <- 6
 default_eta <- 0.3
 default_nrounds <- 10
-
-# Set the number of cross-validation folds
-num_folds <- 5
 
 
 mae_list <- list()
 rmse_list <- list()
 mape_list <- list()
 
-# Create empty data frame to display results
+# Path html files
+html_file_path_statistic <- "D:/Users/Chris/Documents/Studium Extended/Semester 7/Bachelorarbeit/R/statistic.html"
+html_file_path_statistic_table <- "D:/Users/Chris/Documents/Studium Extended/Semester 7/Bachelorarbeit/R/statistic_table.html"
+html_file_path_total <- "D:/Users/Chris/Documents/Studium Extended/Semester 7/Bachelorarbeit/R/total.html"
+
+# Create empty data frame
 results_df <- data.frame(
   Iteration = integer(),
   RunTime = numeric(),
@@ -74,57 +76,6 @@ results <- data.frame(
   MAPE = numeric()
 )
 
-# Cross Validation
-# Set up parallel processing
-registerDoParallel(cores = num_folds)
-
-# Define the cross-validation function
-cv_function <- function(data, features, response, params) {
-  # Split the data into training and validation sets
-  folds <- createFolds(data[[response]], k = num_folds)
-
-  # Initialize lists to store fold results
-  fold_rmse <- vector("list", num_folds)
-  fold_mae <- vector("list", num_folds)
-  fold_mape <- vector("list", num_folds)
-
-  # Perform cross-validation
-  foreach(i = 1:num_folds) %dopar% {
-    fold_data <- data[-folds[[i]], ]
-    validation_data <- data[folds[[i]], ]
-
-    # Create DMatrix objects for training and validation
-    train_dmatrix <- xgb.DMatrix(data = as.matrix(fold_data[, features]), label = fold_data[[response]])
-    validation_dmatrix <- xgb.DMatrix(data = as.matrix(validation_data[, features]), label = validation_data[[response]])
-
-    # Train the model
-    model <- xgb.train(
-      params = params,
-      data = train_dmatrix,
-      nrounds = params$nrounds,
-      verbose = FALSE
-    )
-
-    # Make predictions on the validation set
-    preds <- predict(model, newdata = validation_dmatrix)
-
-    # Calculate evaluation metrics
-    fold_rmse[[i]] <- rmse(validation_data[[response]], preds)
-    fold_mae[[i]] <- mae(validation_data[[response]], preds)
-    fold_mape[[i]] <- mape(validation_data[[response]], preds)
-  }
-
-  # Calculate the average metrics across folds
-  avg_rmse <- mean(unlist(fold_rmse))
-  avg_mae <- mean(unlist(fold_mae))
-  avg_mape <- mean(unlist(fold_mape))
-
-  # Return the average metrics
-  return(list(RMSE = avg_rmse, MAE = avg_mae, MAPE = avg_mape))
-}
-
-
-# Main Loop
 total_iterations <- 1
 
 for (k in 1:count_iterations) {
@@ -133,52 +84,85 @@ for (k in 1:count_iterations) {
       print(total_iterations)
       starting_time <- Sys.time()
 
-      # Filter data for training and forceast
-      training_data <- data %>%
-        filter((createdAt >= as.Date("2016-01-01") & createdAt <= as.Date("2016-08-31")) |
-          (createdAt >= as.Date("2017-01-01") & createdAt <= as.Date("2017-08-31")))
-      prediction_data <- data %>% filter(Year == 2018)
 
-      # Prepare data for gradient boosting algorithm
+      # Select scenario
+      switch(selected_scenario,
+        {
+          # Szenario 1: Training with data for entire 2016 and 2017, prediction for entire 2018
+          if (selected_scenario == 1) {
+            training_data <- data %>%
+              filter((createdAt >= as.Date("2016-01-01") & createdAt <= as.Date("2017-12-31")))
+
+            prediction_data <- data %>%
+              filter(Year == 2018)
+          }
+        },
+        {
+          # Szenario 2: Training with data with partial 2016 and 2017 (until 31.08. each), prediction until 31.08.2018
+          if (selected_scenario == 2) {
+            training_data <- data %>%
+              filter((createdAt >= as.Date("2016-01-01") & createdAt <= as.Date("2016-08-31")) |
+                (createdAt >= as.Date("2017-01-01") & createdAt <= as.Date("2017-08-31")))
+
+            prediction_data <- data %>%
+              filter(Year == 2018 & createdAt <= as.Date("2018-08-31"))
+          }
+        },
+        {
+          # Szenario 3: Training with data 2016 and 2017 (july and august only), prediction 2018 only july and august
+          if (selected_scenario == 3) {
+            training_data <- data %>%
+              filter((format(createdAt, "%Y") %in% c("2016", "2017")) &
+                (format(createdAt, "%m") %in% c("07", "08")))
+
+            prediction_data <- data %>%
+              filter((format(createdAt, "%Y") == "2018") &
+                (format(createdAt, "%m") %in% c("07", "08")))
+          }
+        }
+      )
+
+
+      # Prepare data for gradient boost algorithm
       features <- c("itemId", "status", "sku", "price", "qtyOrdered", "grandTotal", "incrementId", "categoryName", "salesCommisionCode", "discountAmount", "paymentMethod", "workingDate", "BIStatus", "MV", "Year", "Month", "customerSince", "MY", "FY", "customerId", "createdAt")
       response <- "grandTotal"
 
-      columns_to_consider <- c("itemId", "createdAt", "price", "qtyOrdered", "grandTotal", "incrementId", "discountAmount", "customerId")
+      columns_to_consider <- c("itemId", "createdAt", "price", "qtyOrdered", "grandTotal", "discountAmount", "customerId")
       ignore_columns <- setdiff(features, columns_to_consider)
 
-      # Remove columns for gradient boosting
+      # Remove columns from features
       features <- setdiff(features, ignore_columns)
 
-      # Convert createdAt in numeric value
+      # Convert createdAt into numerical value
       training_data$createdAt <- as.numeric(training_data$createdAt)
       prediction_data$createdAt <- as.numeric(prediction_data$createdAt)
 
-      # Create DMastrix object for training and forecast
+      # Create DMatrix objects for training and prediction
       dtrain <- xgb.DMatrix(data = as.matrix(training_data[, features]), label = training_data[[response]])
       dpred <- xgb.DMatrix(data = as.matrix(prediction_data[, features]))
 
-      max_depth_param <- default_max_depth + ((i - 1) * 10)
+      max_depth_param <- default_max_depth + ((i - 1) * 4)
       eta_param <- default_eta + ((k - 1) * 0.1)
-      nrounds_param <- default_nrounds + ((j - 1) * 10)
+      nrounds_param <- default_nrounds + ((j - 1) * 5)
 
       # Define XGBoost parameters
       params <- list(
-        objective = "reg:squarederror", # target function for regression
-        max_depth = max_depth_param, # max depth of trees
-        eta = eta_param, # learning rate
-        nthread = 2 # Count of threads for parallel execution
+        objective = "reg:squarederror",
+        max_depth = max_depth_param,
+        eta = eta_param,
+        nthread = 2
       )
 
-      # Train XGBoost model with whole data set
+      # Train XGB model
       xgboost_model <- xgb.train(params, dtrain, nrounds = nrounds_param)
 
-      # Verwende das Modell zur Vorhersage für das Jahr 2018
+      # Use model to predict for 2018
       predictions <- predict(xgboost_model, dpred)
 
-      # Extrahiere die tatsächlichen Werte für das Jahr 2018
+      # Extract actual values for 2018
       actual_values <- prediction_data$grandTotal
 
-      # Berechne den Gesamtumsatz für die Jahre 2016, 2017 und 2018
+      # Calculate total revenue for 2016, 2017 and 2018
       total_revenue_2016 <- sum(data$grandTotal[data$Year == 2016 & data$createdAt <= as.Date("2016-08-31")])
       total_revenue_2017 <- sum(data$grandTotal[data$Year == 2017 & data$createdAt <= as.Date("2017-08-31")])
       predicted_total_revenue_2018 <- sum(predictions)
@@ -191,14 +175,11 @@ for (k in 1:count_iterations) {
       mae_value <- mae(actual_values, predictions)
 
       # Calculate MAPE
-      mape_value <- mean(abs((actual_total_revenue_2018 - predicted_total_revenue_2018) / actual_total_revenue_2018) * 100)
+      mape_value <- MAPE(actual_values, predictions) * 100
 
       end_time <- Sys.time()
 
       run_time <- end_time - starting_time
-
-      # Perform cross-validation
-      cv_results <- cv_function(data, features, response, params)
 
 
       results_df <- rbind(results_df, list(
@@ -216,7 +197,7 @@ for (k in 1:count_iterations) {
         MAPE = mape_value
       ))
 
-      # Ausgabe der Ergebnisse
+      # Print results
       iteration_results <- data.frame(
         Iteration = i,
         Depth = max_depth_param,
@@ -234,7 +215,7 @@ for (k in 1:count_iterations) {
   }
 }
 
-# Plot erstellen
+# Create plot
 plot <- plot_ly(results, x = ~Iteration) %>%
   add_trace(y = ~RMSE, name = "RMSE", type = "scatter", mode = "lines") %>%
   add_trace(y = ~MAE, name = "MAE", type = "scatter", mode = "lines") %>%
@@ -245,40 +226,23 @@ plot <- plot_ly(results, x = ~Iteration) %>%
     legend = list(title = "Error Metric")
   )
 
+# Delete existing files
+delete_existing_html(html_file_path_statistic)
+delete_existing_html(html_file_path_total)
+delete_existing_html(html_file_path_statistic_table)
 
 
-
-
-# Dateipfad für die HTML-Datei
-html_file_path_statistic <- "D:/Users/Chris/Documents/Studium Extended/Semester 7/Bachelorarbeit/R/statistic.html"
-html_file_path_statistic_table <- "D:/Users/Chris/Documents/Studium Extended/Semester 7/Bachelorarbeit/R/statistic_table.html"
-html_file_path_total <- "D:/Users/Chris/Documents/Studium Extended/Semester 7/Bachelorarbeit/R/total.html"
-
-# Überprüfe, ob die HTML-Datei bereits existiert, und lösche sie gegebenenfalls
-if (file.exists(html_file_path_statistic)) {
-  file.remove(html_file_path_statistic)
-}
-
-if (file.exists(html_file_path_total)) {
-  file.remove(html_file_path_total)
-}
-
-if (file.exists(html_file_path_statistic_table)) {
-  file.remove(html_file_path_statistic_table)
-}
-
-
-# Gesamtanzahl der Transaktionen nach Periode berechnen
+# Total transactions by period
 transaction_count <- data %>%
   group_by(Year, Month) %>%
   summarize(Total_Transactions = n())
 
-# Gesamtumsatz nach Periode berechnen
+# Total revenue by period
 revenue_by_period <- data %>%
   group_by(Year, Month) %>%
   summarize(Total_Revenue = sum(grandTotal))
 
-# Plot erstellen
+# Create plot
 plot_transactions <- plot_ly(transaction_count, x = ~Month, y = ~Total_Transactions, color = ~Year, type = "bar", name = "Transactions") %>%
   layout(
     xaxis = list(title = "Month"),
@@ -293,17 +257,17 @@ plot_revenue <- plot_ly(revenue_by_period, x = ~Month, y = ~Total_Revenue, color
     legend = list(title = "Year")
   )
 
-# Plots gemeinsam anzeigen
+# Show plots together
 subplot_plot <- subplot(plot_transactions, plot_revenue, nrows = 2, shareX = TRUE)
 
-# Plot anzeigen
+# Show plot
 saveWidget(as_widget(subplot_plot), html_file_path_total)
 
-# Plot anzeigen
+# Show plot
 saveWidget(as_widget(plot), html_file_path_statistic)
 
 
-# Erstelle eine interaktive Tabelle mit plotly
+# Create interactive table with plotly
 table_plot <- plot_ly(
   data = results_df,
   type = "table",
@@ -336,8 +300,9 @@ table_plot <- plot_ly(
 
 saveWidget(as_widget(table_plot), html_file_path_statistic_table)
 
-# Stop parallel processing
-stopImplicitCluster()
 
-# Print the final results
-print(results_df)
+delete_existing_html <- function(html_file_path) {
+  if (file.exists(html_file_path)) {
+    file.remove(html_file_path)
+  }
+}
