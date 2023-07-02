@@ -11,8 +11,10 @@ library(htmlwidgets)
 library(pandoc)
 
 # Settings
-count_iterations <- 3
-selected_scenario <- 3
+count_iterations <- 2
+selected_scenario <- 1
+
+settings_default_nthread <- 6
 
 default_max_depth <- 6
 default_eta <- 0.3
@@ -28,7 +30,16 @@ html_file_path_statistic <- "D:/Users/Chris/Documents/Studium Extended/Semester 
 html_file_path_statistic_table <- "D:/Users/Chris/Documents/Studium Extended/Semester 7/Bachelorarbeit/R/statistic_table.html"
 html_file_path_total <- "D:/Users/Chris/Documents/Studium Extended/Semester 7/Bachelorarbeit/R/total.html"
 
-# Create empty data frame
+## Functions
+
+# Delete existing html
+delete_existing_html <- function(html_file_path) {
+  if (file.exists(html_file_path)) {
+    file.remove(html_file_path)
+  }
+}
+
+# Create empty results data frame
 results_df <- data.frame(
   Iteration = integer(),
   RunTime = numeric(),
@@ -150,7 +161,7 @@ for (k in 1:count_iterations) {
         objective = "reg:squarederror",
         max_depth = max_depth_param,
         eta = eta_param,
-        nthread = 2
+        nthread = settings_default_nthread
       )
 
       # Train XGB model
@@ -299,10 +310,3 @@ table_plot <- plot_ly(
 )
 
 saveWidget(as_widget(table_plot), html_file_path_statistic_table)
-
-
-delete_existing_html <- function(html_file_path) {
-  if (file.exists(html_file_path)) {
-    file.remove(html_file_path)
-  }
-}
