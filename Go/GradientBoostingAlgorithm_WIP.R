@@ -9,6 +9,8 @@ library(lubridate)
 library(plotly)
 library(htmlwidgets)
 library(pandoc)
+library(caret)
+library(pROC)
 
 # Settings
 count_iterations <- 2
@@ -37,6 +39,54 @@ delete_existing_html <- function(html_file_path) {
   if (file.exists(html_file_path)) {
     file.remove(html_file_path)
   }
+}
+
+graphical_output <- function() {
+  # Delete existing files
+  delete_existing_html(html_file_path_statistic_table)
+
+  # Total transactions by period
+  transaction_count <- data %>%
+    group_by(Year, Month) %>%
+    summarize(Total_Transactions = n())
+
+  # Total revenue by period
+  revenue_by_period <- data %>%
+    group_by(Year, Month) %>%
+    summarize(Total_Revenue = sum(grandTotal))
+
+  # Create interactive table with plotly
+  table_plot <- plot_ly(
+    data = results_df,
+    type = "table",
+    header = list(
+      values = colnames(results_df),
+      align = c("left", "center"),
+      fill = list(color = "#119DFF"),
+      font = list(color = "white", family = "Arial", size = 12)
+    ),
+    cells = list(
+      values = list(
+        results_df$Iteration,
+        results_df$RunTime,
+        results_df$Depth,
+        results_df$NRounds,
+        results_df$LearningRate,
+        results_df$Gesamtumsatz2016,
+        results_df$Gesamtumsatz2017,
+        results_df$ProgRevTotal2018,
+        results_df$ActualRevTotal2018,
+        results_df$RMSE,
+        results_df$MAE,
+        results_df$MAPE
+      ),
+      align = c("left", "center"),
+      fill = list(color = c("#F0F0F0", "#FFFFFF")),
+      font = list(color = c("#000000"))
+    )
+  )
+
+  saveWidget(as_widget(table_plot), html_file_path_statistic_table)
 }
 
 # Create empty results data frame
@@ -77,236 +127,95 @@ data <- data %>%
     MY = parse_date(MY, format = "%b-%y")
   )
 
-results <- data.frame(
-  Iteration = numeric(),
-  Depth = numeric(),
-  NRounds = numeric(),
-  Learning_Rate = numeric(),
-  RMSE = numeric(),
-  MAE = numeric(),
-  MAPE = numeric()
+# Select relevant columns
+columns_to_consider <- c("itemId", "createdAt", "price", "qtyOrdered", "grandTotal", "discountAmount", "customerId", "Year", "workingDate")
+data_selected <- data %>% select(all_of(columns_to_consider))
+
+# Convert date into numeric (unix)
+data_selected <- data_selected %>%
+  mutate(createdAt = as.numeric(as_datetime(createdAt)))
+data_selected <- data_selected %>%
+  mutate(workingDate = as.numeric(as_datetime(workingDate)))
+
+# Split data by year
+data_2016 <- data_selected %>% filter(Year == 2016)
+data_2017 <- data_selected %>% filter(Year == 2017)
+data_2018 <- data_selected %>% filter(Year == 2018)
+
+# Überprüfung der Spalten auf numerische Werte
+non_numeric_columns <- sapply(data_selected, function(x) !is.numeric(x))
+
+# Ausgabe der Spalten mit nicht-numerischen Werten
+print(names(data_selected)[non_numeric_columns])
+
+
+# Greate gradient boosting model
+gbm <- xgboost(
+  data = as.matrix(rbind(data_2016[, -6], data_2017[, -6])),
+  label = c(data_2016$grandTotal, data_2017$grandTotal),
+  nrounds = 100
 )
 
-total_iterations <- 1
+# Execute cross validation
+folds <- createFolds(data_2018$grandTotal, k = 3)
+epsilon <- 1e-10 # Small epsilon value
 
-for (k in 1:count_iterations) {
-  for (j in 1:count_iterations) {
-    for (i in 1:count_iterations) {
-      print(total_iterations)
-      starting_time <- Sys.time()
+rmse <- c()
+mse <- c()
+mae <- c()
+mape <- c()
 
-
-      # Select scenario
-      switch(selected_scenario,
-        {
-          # Szenario 1: Training with data for entire 2016 and 2017, prediction for entire 2018
-          if (selected_scenario == 1) {
-            training_data <- data %>%
-              filter((createdAt >= as.Date("2016-01-01") & createdAt <= as.Date("2017-12-31")))
-
-            prediction_data <- data %>%
-              filter(Year == 2018)
-          }
-        },
-        {
-          # Szenario 2: Training with data with partial 2016 and 2017 (until 31.08. each), prediction until 31.08.2018
-          if (selected_scenario == 2) {
-            training_data <- data %>%
-              filter((createdAt >= as.Date("2016-01-01") & createdAt <= as.Date("2016-08-31")) |
-                (createdAt >= as.Date("2017-01-01") & createdAt <= as.Date("2017-08-31")))
-
-            prediction_data <- data %>%
-              filter(Year == 2018 & createdAt <= as.Date("2018-08-31"))
-          }
-        },
-        {
-          # Szenario 3: Training with data 2016 and 2017 (july and august only), prediction 2018 only july and august
-          if (selected_scenario == 3) {
-            training_data <- data %>%
-              filter((format(createdAt, "%Y") %in% c("2016", "2017")) &
-                (format(createdAt, "%m") %in% c("07", "08")))
-
-            prediction_data <- data %>%
-              filter((format(createdAt, "%Y") == "2018") &
-                (format(createdAt, "%m") %in% c("07", "08")))
-          }
-        }
-      )
+accuracy <- c()
 
 
-      # Prepare data for gradient boost algorithm
-      features <- c("itemId", "status", "sku", "price", "qtyOrdered", "grandTotal", "incrementId", "categoryName", "salesCommisionCode", "discountAmount", "paymentMethod", "workingDate", "BIStatus", "MV", "Year", "Month", "customerSince", "MY", "FY", "customerId", "createdAt")
-      response <- "grandTotal"
 
-      columns_to_consider <- c("itemId", "createdAt", "price", "qtyOrdered", "grandTotal", "discountAmount", "customerId")
-      ignore_columns <- setdiff(features, columns_to_consider)
-
-      # Remove columns from features
-      features <- setdiff(features, ignore_columns)
-
-      # Convert createdAt into numerical value
-      training_data$createdAt <- as.numeric(training_data$createdAt)
-      prediction_data$createdAt <- as.numeric(prediction_data$createdAt)
-
-      # Create DMatrix objects for training and prediction
-      dtrain <- xgb.DMatrix(data = as.matrix(training_data[, features]), label = training_data[[response]])
-      dpred <- xgb.DMatrix(data = as.matrix(prediction_data[, features]))
-
-      max_depth_param <- default_max_depth + ((i - 1) * 4)
-      eta_param <- default_eta + ((k - 1) * 0.1)
-      nrounds_param <- default_nrounds + ((j - 1) * 5)
-
-      # Define XGBoost parameters
-      params <- list(
-        objective = "reg:squarederror",
-        max_depth = max_depth_param,
-        eta = eta_param,
-        nthread = settings_default_nthread
-      )
-
-      # Train XGB model
-      xgboost_model <- xgb.train(params, dtrain, nrounds = nrounds_param)
-
-      # Use model to predict for 2018
-      predictions <- predict(xgboost_model, dpred)
-
-      # Extract actual values for 2018
-      actual_values <- prediction_data$grandTotal
-
-      # Calculate total revenue for 2016, 2017 and 2018
-      total_revenue_2016 <- sum(data$grandTotal[data$Year == 2016 & data$createdAt <= as.Date("2016-08-31")])
-      total_revenue_2017 <- sum(data$grandTotal[data$Year == 2017 & data$createdAt <= as.Date("2017-08-31")])
-      predicted_total_revenue_2018 <- sum(predictions)
-      actual_total_revenue_2018 <- sum(actual_values)
-
-      # Calculate RMSE
-      rmse_value <- rmse(actual_values, predictions)
-
-      # Calculate MAE
-      mae_value <- mae(actual_values, predictions)
-
-      # Calculate MAPE
-      mape_value <- MAPE(actual_values, predictions) * 100
-
-      end_time <- Sys.time()
-
-      run_time <- end_time - starting_time
+for (fold in folds) {
+  train_data <- rbind(data_2016, data_2017)[-fold, ]
+  test_data <- rbind(data_2016, data_2017)[fold, ]
 
 
-      results_df <- rbind(results_df, list(
-        Iteration = total_iterations,
-        RunTime = as.numeric(run_time, units = "secs"),
-        Depth = max_depth_param,
-        NRounds = nrounds_param,
-        LearningRate = eta_param,
-        Gesamtumsatz2016 = total_revenue_2016,
-        Gesamtumsatz2017 = total_revenue_2017,
-        ProgRevTotal2018 = predicted_total_revenue_2018,
-        ActualRevTotal2018 = actual_total_revenue_2018,
-        RMSE = rmse_value,
-        MAE = mae_value,
-        MAPE = mape_value
-      ))
+  # Teile Trainingsdaten in positive und negative Beispiele auf
+  positive_examples <- train_data[train_data$grandTotal > 0, ]
+  negative_examples <- train_data[train_data$grandTotal == 0, ]
 
-      # Print results
-      iteration_results <- data.frame(
-        Iteration = i,
-        Depth = max_depth_param,
-        NRounds = nrounds_param,
-        Learning_Rate = eta_param,
-        RMSE = rmse_value,
-        MAE = mae_value,
-        MAPE = mape_value
-      )
+  # Überprüfe die Anzahl der positiven und negativen Beispiele
+  positive_count <- nrow(positive_examples)
+  negative_count <- nrow(negative_examples)
 
-      results <- rbind(results, iteration_results)
+  cat("Positive examples count:", positive_count, "\n")
+  cat("Negative examples count:", negative_count, "\n")
 
-      total_iterations <- total_iterations + 1
-    }
-  }
+  # Train the model
+  gbm <- xgboost(data = as.matrix(train_data[, -6]), label = train_data$grandTotal, nrounds = 100)
+
+  # Make predictions for the test set
+  predictions <- predict(gbm, as.matrix(test_data[, -6]))
+
+  # Calculate accuracy and handle cases with true grand total of zero
+  accuracy <- c(accuracy, mean(abs(predictions - test_data$grandTotal) / pmax(test_data$grandTotal, epsilon)))
+
+  # Calculate RMSE
+  rmse_fold <- sqrt(mean((predictions - test_data$grandTotal)^2))
+  rmse <- c(rmse, rmse_fold)
+
+  # Calculate MSE
+  mse_fold <- mean((predictions - test_data$grandTotal)^2)
+  mse <- c(mse, mse_fold)
+
+  # Calculate MAE
+  mae_fold <- mean(abs(predictions - test_data$grandTotal))
+  mae <- c(mae, mae_fold)
+
+  # Calculate MAPE
+  mape_fold <- MAPE(test_data$grandTotal, predictions)
+  mape <- c(mape, mape_fold)
 }
 
-# Create plot
-plot <- plot_ly(results, x = ~Iteration) %>%
-  add_trace(y = ~RMSE, name = "RMSE", type = "scatter", mode = "lines") %>%
-  add_trace(y = ~MAE, name = "MAE", type = "scatter", mode = "lines") %>%
-  add_trace(y = ~MAPE, name = "MAPE", type = "scatter", mode = "lines") %>%
-  layout(
-    xaxis = list(title = "Iteration"),
-    yaxis = list(title = "Error"),
-    legend = list(title = "Error Metric")
-  )
+actual_total_revenue_2018 <- sum(data_2018$grandTotal)
+mean_accuracy <- mean(accuracy)
 
-# Delete existing files
-delete_existing_html(html_file_path_statistic)
-delete_existing_html(html_file_path_total)
-delete_existing_html(html_file_path_statistic_table)
+cat("Actual total revenue for 2018: ", actual_total_revenue_2018, "\n", "Mean Accuracy is: ", mean_accuracy, " mean RMSE: ", mean(rmse), " mean MSE: ", mean(mse), " mean MAE: ", mean(mae), "mean MAPE: ", mean(mape), "\n")
 
-
-# Total transactions by period
-transaction_count <- data %>%
-  group_by(Year, Month) %>%
-  summarize(Total_Transactions = n())
-
-# Total revenue by period
-revenue_by_period <- data %>%
-  group_by(Year, Month) %>%
-  summarize(Total_Revenue = sum(grandTotal))
-
-# Create plot
-plot_transactions <- plot_ly(transaction_count, x = ~Month, y = ~Total_Transactions, color = ~Year, type = "bar", name = "Transactions") %>%
-  layout(
-    xaxis = list(title = "Month"),
-    yaxis = list(title = "Transaction Count"),
-    legend = list(title = "Year")
-  )
-
-plot_revenue <- plot_ly(revenue_by_period, x = ~Month, y = ~Total_Revenue, color = ~Year, type = "bar", name = "Revenue") %>%
-  layout(
-    xaxis = list(title = "Month"),
-    yaxis = list(title = "Total Revenue"),
-    legend = list(title = "Year")
-  )
-
-# Show plots together
-subplot_plot <- subplot(plot_transactions, plot_revenue, nrows = 2, shareX = TRUE)
-
-# Show plot
-saveWidget(as_widget(subplot_plot), html_file_path_total)
-
-# Show plot
-saveWidget(as_widget(plot), html_file_path_statistic)
-
-
-# Create interactive table with plotly
-table_plot <- plot_ly(
-  data = results_df,
-  type = "table",
-  header = list(
-    values = colnames(results_df),
-    align = c("left", "center"),
-    fill = list(color = "#119DFF"),
-    font = list(color = "white", family = "Arial", size = 12)
-  ),
-  cells = list(
-    values = list(
-      results_df$Iteration,
-      results_df$RunTime,
-      results_df$Depth,
-      results_df$NRounds,
-      results_df$LearningRate,
-      results_df$Gesamtumsatz2016,
-      results_df$Gesamtumsatz2017,
-      results_df$ProgRevTotal2018,
-      results_df$ActualRevTotal2018,
-      results_df$RMSE,
-      results_df$MAE,
-      results_df$MAPE
-    ),
-    align = c("left", "center"),
-    fill = list(color = c("#F0F0F0", "#FFFFFF")),
-    font = list(color = c("#000000"))
-  )
-)
-
-saveWidget(as_widget(table_plot), html_file_path_statistic_table)
+for (i in 1:length(accuracy)) {
+  cat("Accuracy for Fold", i, ":", accuracy[i], " with RMSE: ", rmse[i], " MSE: ", mse[i], " MAE: ", mae[i], "MAPE: ", mape[i], "\n")
+}
