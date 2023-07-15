@@ -128,7 +128,7 @@ data <- data %>%
   )
 
 # Select relevant columns
-columns_to_consider <- c("itemId", "createdAt", "price", "qtyOrdered", "grandTotal", "discountAmount", "customerId", "Year", "workingDate")
+columns_to_consider <- c("itemId", "createdAt", "price", "qtyOrdered", "grandTotal", "discountAmount", "customerId", "Year", "Month", "workingDate")
 data_selected <- data %>% select(all_of(columns_to_consider))
 
 # Convert date into numeric (unix)
@@ -138,9 +138,9 @@ data_selected <- data_selected %>%
   mutate(workingDate = as.numeric(as_datetime(workingDate)))
 
 # Split data by year
-data_2016 <- data_selected %>% filter(Year == 2016)
-data_2017 <- data_selected %>% filter(Year == 2017)
-data_2018 <- data_selected %>% filter(Year == 2018)
+data_2016 <- data_selected %>% filter(Year == 2016 & (Month == 7 | Month == 8))
+data_2017 <- data_selected %>% filter(Year == 2017 & (Month == 7 | Month == 8))
+data_2018 <- data_selected %>% filter(Year == 2018 & (Month == 7 | Month == 8))
 
 # Überprüfung der Spalten auf numerische Werte
 non_numeric_columns <- sapply(data_selected, function(x) !is.numeric(x))
@@ -165,6 +165,8 @@ mse <- c()
 mae <- c()
 mape <- c()
 
+predictions_value <- c()
+
 accuracy <- c()
 
 
@@ -179,17 +181,20 @@ for (fold in folds) {
   negative_examples <- train_data[train_data$grandTotal == 0, ]
 
   # Überprüfe die Anzahl der positiven und negativen Beispiele
-  positive_count <- nrow(positive_examples)
-  negative_count <- nrow(negative_examples)
-
-  cat("Positive examples count:", positive_count, "\n")
-  cat("Negative examples count:", negative_count, "\n")
+  if (nrow(negative_examples) > nrow(positive_examples)) {
+    # Datenbalance durchführen
+    balanced_negative_examples <- sample_n(negative_examples, size = nrow(positive_examples))
+    balanced_train_data <- rbind(positive_examples, balanced_negative_examples)
+  } else {
+    balanced_train_data <- train_data
+  }
 
   # Train the model
   gbm <- xgboost(data = as.matrix(train_data[, -6]), label = train_data$grandTotal, nrounds = 100)
 
   # Make predictions for the test set
   predictions <- predict(gbm, as.matrix(test_data[, -6]))
+  predictions_value <- c(predictions_value, sum(predictions))
 
   # Calculate accuracy and handle cases with true grand total of zero
   accuracy <- c(accuracy, mean(abs(predictions - test_data$grandTotal) / pmax(test_data$grandTotal, epsilon)))
@@ -212,10 +217,11 @@ for (fold in folds) {
 }
 
 actual_total_revenue_2018 <- sum(data_2018$grandTotal)
+prediction_total_revenue_2018 <- sum(predictions)
 mean_accuracy <- mean(accuracy)
 
-cat("Actual total revenue for 2018: ", actual_total_revenue_2018, "\n", "Mean Accuracy is: ", mean_accuracy, " mean RMSE: ", mean(rmse), " mean MSE: ", mean(mse), " mean MAE: ", mean(mae), "mean MAPE: ", mean(mape), "\n")
+cat("Actual total revenue for 2018: ", actual_total_revenue_2018, " predicted total revenue for 2018: ", prediction_total_revenue_2018, "\n", "Mean Accuracy is: ", mean_accuracy, " mean RMSE: ", mean(rmse), " mean MSE: ", mean(mse), " mean MAE: ", mean(mae), "mean MAPE: ", mean(mape), "\n")
 
 for (i in 1:length(accuracy)) {
-  cat("Accuracy for Fold", i, ":", accuracy[i], " with RMSE: ", rmse[i], " MSE: ", mse[i], " MAE: ", mae[i], "MAPE: ", mape[i], "\n")
+  cat("Accuracy for Fold", i, ":", accuracy[i], " with RMSE: ", rmse[i], " MSE: ", mse[i], " MAE: ", mae[i], "MAPE: ", mape[i], "predicted revenue: ", predictions_value[i], "\n")
 }

@@ -98,7 +98,7 @@ for (k in 1:count_iterations) {
           }
         },
         {
-          # Szenario 2: Training with data with partial 2016 and 2017 (until 31.08. each), prediction until 31.08.2018
+          # Scenario 2: Training with data with partial 2016 and 2017 (until 31.08. each), prediction until 31.08.2018
           if (selected_scenario == 2) {
             training_data <- data %>%
               filter((createdAt >= as.Date("2016-01-01") & createdAt <= as.Date("2016-08-31")) |
@@ -109,7 +109,7 @@ for (k in 1:count_iterations) {
           }
         },
         {
-          # Szenario 3: Training with data 2016 and 2017 (july and august only), prediction 2018 only july and august
+          # Scenario 3: Training with data 2016 and 2017 (july and august only), prediction 2018 only july and august
           if (selected_scenario == 3) {
             training_data <- data %>%
               filter((format(createdAt, "%Y") %in% c("2016", "2017")) &
