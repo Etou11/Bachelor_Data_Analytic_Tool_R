@@ -105,20 +105,20 @@ results_df <- data.frame(
   stringsAsFactors = FALSE
 )
 
-file_path <- "D:/Users/Chris/Documents/Studium Extended/Semester 7/Bachelorarbeit/R/Data Source/Pakistan Largest Ecommerce Dataset.csv"
+file_path <- "D:/Users/Chris/Documents/Studium Extended/Semester 7/Bachelorarbeit/R/Data Source/Pakistan-Largest-Ecommerce-Dataset-Cleansed.csv"
 data <- read_csv(file_path, skip = 1, col_names = c("itemId", "status", "createdAt", "sku", "price", "qtyOrdered", "grandTotal", "incrementId", "categoryName", "salesCommisionCode", "discountAmount", "paymentMethod", "workingDate", "BIStatus", "MV", "Year", "Month", "customerSince", "MY", "FY", "customerId"))
 
 # Prepare data
 data <- data %>%
   mutate(
+    incrementId = as.numeric(incrementId),
     itemId = as.numeric(itemId),
-    createdAt = parse_date(createdAt, format = "%m/%d/%Y"),
+    createdAt = as.numeric(createdAt),
     price = as.numeric(price),
     qtyOrdered = as.numeric(qtyOrdered),
     grandTotal = as.numeric(grandTotal),
-    incrementId = as.numeric(incrementId),
     discountAmount = as.numeric(discountAmount),
-    workingDate = parse_date(workingDate, format = "%m/%d/%Y"),
+    workingDate = as.numeric(workingDate),
     MV = as.numeric(gsub(",", "", MV)),
     Year = as.numeric(Year),
     Month = as.numeric(Month),
@@ -127,8 +127,9 @@ data <- data %>%
     MY = parse_date(MY, format = "%b-%y")
   )
 
+
 # Select relevant columns
-columns_to_consider <- c("itemId", "createdAt", "price", "qtyOrdered", "grandTotal", "discountAmount", "customerId", "Year", "Month", "workingDate")
+columns_to_consider <- c("incrementId", "itemId", "createdAt", "price", "qtyOrdered", "grandTotal", "discountAmount", "customerId", "Year", "Month", "workingDate")
 data_selected <- data %>% select(all_of(columns_to_consider))
 
 # Convert date into numeric (unix)
@@ -142,10 +143,10 @@ data_2016 <- data_selected %>% filter(Year == 2016 & (Month == 7 | Month == 8))
 data_2017 <- data_selected %>% filter(Year == 2017 & (Month == 7 | Month == 8))
 data_2018 <- data_selected %>% filter(Year == 2018 & (Month == 7 | Month == 8))
 
-# Überprüfung der Spalten auf numerische Werte
+# Check columns for non-numeric columns
 non_numeric_columns <- sapply(data_selected, function(x) !is.numeric(x))
 
-# Ausgabe der Spalten mit nicht-numerischen Werten
+# Print names of non-numeric columns
 print(names(data_selected)[non_numeric_columns])
 
 
@@ -156,8 +157,7 @@ gbm <- xgboost(
   nrounds = 100
 )
 
-# Execute cross validation
-folds <- createFolds(data_2018$grandTotal, k = 3)
+
 epsilon <- 1e-10 # Small epsilon value
 
 rmse <- c()
@@ -166,23 +166,23 @@ mae <- c()
 mape <- c()
 
 predictions_value <- c()
-
 accuracy <- c()
 
-
+# Execute cross validation
+folds <- createFolds(data_2018$grandTotal, k = 3)
 
 for (fold in folds) {
   train_data <- rbind(data_2016, data_2017)[-fold, ]
   test_data <- rbind(data_2016, data_2017)[fold, ]
 
 
-  # Teile Trainingsdaten in positive und negative Beispiele auf
+  # Partition training data
   positive_examples <- train_data[train_data$grandTotal > 0, ]
   negative_examples <- train_data[train_data$grandTotal == 0, ]
 
-  # Überprüfe die Anzahl der positiven und negativen Beispiele
+  # Check positive & negative examples
   if (nrow(negative_examples) > nrow(positive_examples)) {
-    # Datenbalance durchführen
+    # Execute data balance
     balanced_negative_examples <- sample_n(negative_examples, size = nrow(positive_examples))
     balanced_train_data <- rbind(positive_examples, balanced_negative_examples)
   } else {
@@ -193,7 +193,7 @@ for (fold in folds) {
   gbm <- xgboost(data = as.matrix(train_data[, -6]), label = train_data$grandTotal, nrounds = 100)
 
   # Make predictions for the test set
-  predictions <- predict(gbm, as.matrix(test_data[, -6]))
+  predictions <- c(predict(gbm, as.matrix(test_data[, -6])))
   predictions_value <- c(predictions_value, sum(predictions))
 
   # Calculate accuracy and handle cases with true grand total of zero
@@ -217,7 +217,7 @@ for (fold in folds) {
 }
 
 actual_total_revenue_2018 <- sum(data_2018$grandTotal)
-prediction_total_revenue_2018 <- sum(predictions)
+prediction_total_revenue_2018 <- sum(predictions_value)
 mean_accuracy <- mean(accuracy)
 
 cat("Actual total revenue for 2018: ", actual_total_revenue_2018, " predicted total revenue for 2018: ", prediction_total_revenue_2018, "\n", "Mean Accuracy is: ", mean_accuracy, " mean RMSE: ", mean(rmse), " mean MSE: ", mean(mse), " mean MAE: ", mean(mae), "mean MAPE: ", mean(mape), "\n")
