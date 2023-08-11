@@ -333,7 +333,6 @@ table_plot <- plot_ly(
       results_df$ActualRevTotal2018,
       results_df$PercentageError,
       results_df$RMSE,
-      # results_df$MSE,
       results_df$MAE,
       results_df$SMAPE
     ),
@@ -342,5 +341,42 @@ table_plot <- plot_ly(
     font = list(color = c("#000000"))
   )
 )
+
+# Add sort button
+sort_buttons <- list()
+for (col_index in 1:ncol(results_df)) {
+  col_name <- colnames(results_df)[col_index]
+  sort_buttons <- c(
+    sort_buttons,
+    list(
+      args = list(list(order = list(list(column = col_index, ascending = TRUE)))),
+      label = paste(col_name, "aufsteigend"),
+      method = "sort"
+    ),
+    list(
+      args = list(list(order = list(list(column = col_index, ascending = FALSE)))),
+      label = paste(col_name, "absteigend"),
+      method = "sort"
+    )
+  )
+}
+
+# Add interactive sort
+table_plot <- table_plot %>%
+  layout(
+    updatemenus = list(
+      list(
+        buttons = sort_buttons,
+        direction = "down",
+        showactive = FALSE,
+        type = "buttons",
+        x = 0.05,
+        xanchor = "left",
+        y = 1.1,
+        yanchor = "top"
+      )
+    )
+  )
+
 
 saveWidget(as_widget(table_plot), file = html_file_path_statistic_table)
