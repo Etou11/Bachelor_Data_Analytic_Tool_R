@@ -11,7 +11,10 @@ library(plotly)
 library(htmlwidgets)
 library(pandoc)
 library(data.table)
+library(forecast)
 
+# Mandatory to avoid random convertion in exponential format, which screws with MAPE calculation
+options(scipen = 20)
 
 # One-Hot-Encoding
 one_hot_encoding <- function(data, category) {
@@ -26,6 +29,19 @@ delete_existing_html <- function(html_file_path) {
   if (file.exists(html_file_path)) {
     file.remove(html_file_path)
   }
+}
+
+mape_score <- function(actual_values, predicted_values) {
+  ele_count <- length(actual_values)
+  mape <- (1 / ele_count) * sum(abs((actual_values - predicted_values) / actual_values)) * 100
+  # View(actual_values)
+  # View(predicted_values)
+  # while (1 == 1) {
+  #  Sys.sleep(1)
+  # }
+  # cat("Actual values count: ", length(actual_values), "predicted values count: ", length(predicted_values), "actual values sum: ", sum(abs(actual_values)), "predicted values sum: ", sum(abs(predicted_values)), " MAPE: ", mape)
+  # cat("Actual values = ", actual_values, "predicted values: ", predicted_values)
+  return(mape)
 }
 
 # Settings
@@ -56,15 +72,17 @@ results_df <- data.table(
   LearningRate = numeric(),
   ProgRevTotal2018 = numeric(),
   ActualRevTotal2018 = numeric(),
+  PercentageError = numeric(),
   RMSE = numeric(),
+  # MSE = numeric(),
   MAE = numeric(),
-  MAPE = numeric()
+  SMAPE = numeric()
 )
 
 results_list <- list()
 
 file_path <- "D:/Users/Chris/Documents/Studium Extended/Semester 7/Bachelorarbeit/R/Data Source/Pakistan-Largest-Ecommerce-Dataset-Cleansed.csv"
-data <- read_csv(file_path, skip = 1, col_names = c("itemId", "incrementId", "status", "createdAt", "sku", "price", "qtyOrdered", "grandTotal", "categoryName", "salesCommisionCode", "discountAmount", "paymentMethod", "workingDate", "BIStatus", "MV", "Year", "Month", "customerSince", "MY", "FY", "customerId"))
+data <- read_csv(file_path, skip = 1, col_names = c("incrementId", "itemId", "status", "createdAt", "sku", "price", "qtyOrdered", "grandTotal", "categoryName", "salesCommisionCode", "discountAmount", "paymentMethod", "workingDate", "BIStatus", "MV", "Year", "Month", "customerSince", "MY", "FY", "customerId"))
 
 # Prepare data
 data <- data %>%
@@ -92,23 +110,25 @@ data <- data %>%
   one_hot_encoding(paymentMethod) %>%
   one_hot_encoding(FY)
 
-
 scenario_list <- c(1, 2, 3)
-featureset <- c("short", "def", "ip")
+featureset <- c("ip", "short")
 max_depth_list <- c(3, 5, 8)
 learn_rate_list <- c(0.1, 0.2, 0.3)
-nrounds_list <- c(10, 25, 50)
+nrounds_list <- c(10, 25, 50, 100)
 
 training_data_scenario_one <- data %>%
-  filter((createdAt >= as.Date("2016-01-01") & createdAt <= as.Date("2017-12-31")))
+  filter((format(createdAt, "%Y") %in% c("2016", "2017")) &
+    (format(createdAt, "%m") %in% c("07", "08", "06", "05", "04", "03", "02", "01", "09", "10", "11", "12")))
 prediction_data_scenario_one <- data %>%
-  filter(Year == 2018)
+  filter((format(createdAt, "%Y") == "2018") &
+    (format(createdAt, "%m") %in% c("07", "08", "06", "05", "04", "03", "02", "01", "09", "10", "11", "12")))
 
 training_data_scenario_two <- data %>%
-  filter((createdAt >= as.Date("2016-01-01") & createdAt <= as.Date("2016-08-31")) |
-    (createdAt >= as.Date("2017-01-01") & createdAt <= as.Date("2017-08-31")))
+  filter((format(createdAt, "%Y") %in% c("2016", "2017")) &
+    (format(createdAt, "%m") %in% c("07", "08", "06", "05", "04", "03", "02", "01")))
 prediction_data_scenario_two <- data %>%
-  filter(Year == 2018 & createdAt <= as.Date("2018-08-31"))
+  filter((format(createdAt, "%Y") == "2018") &
+    (format(createdAt, "%m") %in% c("07", "08", "06", "05", "04", "03", "02", "01")))
 
 training_data_scenario_three <- data %>%
   filter((format(createdAt, "%Y") %in% c("2016", "2017")) &
@@ -149,34 +169,38 @@ execute_scenarios <- function(selected_scenario, selected_featureset, max_depth,
     }
   )
 
-  features <- c("itemId", "status", "sku", "price", "qtyOrdered", "grandTotal", "incrementId", "categoryName", "salesCommisionCode", "discountAmount", "paymentMethod", "workingDate", "BIStatus", "MV", "Year", "Month", "customerSince", "MY", "FY", "customerId", "createdAt")
+  # Convert createdAt, workingDate and customerSince into numerical value
+  tryCatch(
+    {
+      training_data$createdAt <- as.numeric(training_data$createdAt)
+      prediction_data$createdAt <- as.numeric(prediction_data$createdAt)
+      training_data$workingDate <- as.numeric(training_data$workingDate)
+      prediction_data$workingDate <- as.numeric(prediction_data$workingDate)
+      training_data$customerSince <- as.numeric(training_data$customerSince)
+      prediction_data$customerSince <- as.numeric(prediction_data$customerSince)
+      training_data$MY <- as.numeric(training_data$MY)
+      prediction_data$MY <- as.numeric(prediction_data$MY)
+    },
+    error = function(e) {
+      print("Error: Convert createdAt, workingDate and customerSince into numerical value")
+      print(e)
+    }
+  )
+
+  features <- c("incrementId", "itemId", "status", "createdAt", "sku", "price", "qtyOrdered", "grandTotal", "categoryName", "salesCommisionCode", "discountAmount", "paymentMethod", "workingDate", "BIStatus", "MV", "Year", "Month", "customerSince", "MY", "FY", "customerId")
   response <- "grandTotal"
 
   # Select featureset
   switch(selected_featureset,
     "short" = {
       # Featureset short
-      features <- c("itemId", "price", "qtyOrdered", "grandTotal", "incrementId", "MV", "customerId", "createdAt")
+      features <- c("incrementId", "itemId", "createdAt", "price", "qtyOrdered", "grandTotal", "MV", "customerId")
     },
     "ip" = {
       # Featureset ip
-      features <- c("itemId", "status", "price", "qtyOrdered", "grandTotal", "incrementId", "categoryName", "discountAmount", "paymentMethod", "BIStatus", "MV", "Month", "customerSince", "MY", "FY", "customerId", "createdAt")
-    },
-    "def" = {
-      # Featureset default
-      features <- c("itemId", "status", "price", "qtyOrdered", "grandTotal", "incrementId", "categoryName", "discountAmount", "paymentMethod", "BIStatus", "MV", "Year", "Month", "customerSince", "MY", "FY", "customerId", "createdAt")
+      features <- c("incrementId", "itemId", "status", "createdAt", "price", "qtyOrdered", "grandTotal", "categoryName", "discountAmount", "paymentMethod", "BIStatus", "MV", "Month", "customerSince", "MY", "FY", "customerId")
     }
   )
-
-  # Convert createdAt, workingDate and customerSince into numerical value
-  training_data$createdAt <- as.numeric(training_data$createdAt)
-  prediction_data$createdAt <- as.numeric(prediction_data$createdAt)
-  training_data$workingDate <- as.numeric(training_data$workingDate)
-  prediction_data$workingDate <- as.numeric(prediction_data$workingDate)
-  training_data$customerSince <- as.numeric(training_data$customerSince)
-  prediction_data$customerSince <- as.numeric(prediction_data$customerSince)
-  training_data$MY <- as.numeric(training_data$MY)
-  prediction_data$MY <- as.numeric(prediction_data$MY)
 
   starting_time <- Sys.time()
 
@@ -187,64 +211,81 @@ execute_scenarios <- function(selected_scenario, selected_featureset, max_depth,
       dpred <- xgb.DMatrix(data = as.matrix(prediction_data[, features]))
     },
     error = function(e) {
-      print("Error:")
+      print("Error: Create DMatrix objects for training and prediction")
       print(e)
     }
   )
 
-  # Define XGBoost parameters
-  params <- list(
-    objective = "reg:squarederror",
-    max_depth = max_depth,
-    eta = learn_rate,
-    nthread = 12
-  )
-
-  # Train XGB model
-  xgboost_model <- xgb.train(params, dtrain, nrounds = nrounds)
-
-  # Use model to predict for 2018
-  predictions <- predict(xgboost_model, dpred)
-
-  # Extract actual values for 2018
-  actual_values <- prediction_data$grandTotal
-
-  # Calculate total and predicted revenue
-  predicted_total_revenue_2018 <- sum(predictions)
-  actual_total_revenue_2018 <- sum(actual_values)
-
-  # Calculate RMSE
-  rmse_value <- rmse(actual_values, predictions)
-
-  # Calculate MAE
-  mae_value <- mae(actual_values, predictions)
-
-  # Calculate MAPE
-  mape_value <- MAPE(actual_values, predictions) * 100
-
-
-  end_time <- Sys.time()
-  run_time <- end_time - starting_time
 
   tryCatch(
     {
+      # Define XGBoost parameters
+      params <- list(
+        objective = "reg:squarederror",
+        max_depth = max_depth,
+        eta = learn_rate,
+        nthread = 12
+      )
+
+      # Train XGB model
+      xgboost_model <- xgb.train(params, dtrain, nrounds = nrounds)
+
+      # Use model to predict for 2018
+      predictions <- predict(xgboost_model, dpred)
+
+      # Extract actual values for 2018
+      actual_values <- prediction_data$grandTotal
+
+      # Replace null values with small values
+      actual_values <- replace(actual_values, actual_values == 0, 1)
+
+      # Limit decimal place to 3, to prevent weird behaviour and values during MAPE calculation
+      actual_values <- round(actual_values, 3)
+
+      # Calculate total and predicted revenue
+      predicted_total_revenue_2018 <- sum(predictions)
+      actual_total_revenue_2018 <- sum(actual_values)
+
+      # Calculate PercentageError PE
+      pe_value <- ((actual_total_revenue_2018 - predicted_total_revenue_2018) / actual_total_revenue_2018) * 100
+
+      # Calculate RMSE
+      rmse_value <- rmse(actual_values, predictions)
+
+      # Calculate MSE
+      # mse_value <- mse(actual_values, predictions)
+
+      # Calculate MAE
+      mae_value <- mae(actual_values, predictions)
+
+      # Calculate SMAPE
+      # mape_value <- mape_score(actual_values, predictions)
+      # mape_value <- MAPE(predictions, actual_values)
+      smape_value <- smape(actual_values, predictions) * 100
+
+
+      end_time <- Sys.time()
+      run_time <- end_time - starting_time
+
       results_df <<- rbind(results_df, list(
         Iteration = total_iterations_arg,
         Scenario = selected_scenario,
         Featureset = selected_featureset,
-        RunTime = as.numeric(run_time, units = "secs"),
+        RunTime = round(as.numeric(run_time, units = "secs"), 3),
         Depth = max_depth,
         NRounds = nrounds,
         LearningRate = learn_rate,
-        ProgRevTotal2018 = predicted_total_revenue_2018,
-        ActualRevTotal2018 = actual_total_revenue_2018,
-        RMSE = rmse_value,
-        MAE = mae_value,
-        MAPE = mape_value
+        ProgRevTotal2018 = round(predicted_total_revenue_2018, 2),
+        ActualRevTotal2018 = round(actual_total_revenue_2018, 2),
+        PercentageError = round(pe_value, 2),
+        RMSE = round(rmse_value, 2),
+        # MSE = round(mse_value, 2),
+        MAE = round(mae_value, 2),
+        SMAPE = round(smape_value, 2)
       ))
     },
     error = function(e) {
-      print("Error:")
+      print("Error: Define XGBoost parameters")
       print(e)
     }
   )
@@ -290,9 +331,11 @@ table_plot <- plot_ly(
       results_df$LearningRate,
       results_df$ProgRevTotal2018,
       results_df$ActualRevTotal2018,
+      results_df$PercentageError,
       results_df$RMSE,
+      # results_df$MSE,
       results_df$MAE,
-      results_df$MAPE
+      results_df$SMAPE
     ),
     align = c("left", "center"),
     fill = list(color = c("#F0F0F0", "#FFFFFF")),
@@ -300,4 +343,4 @@ table_plot <- plot_ly(
   )
 )
 
-saveWidget(as_widget(table_plot), html_file_path_statistic_table)
+saveWidget(as_widget(table_plot), file = html_file_path_statistic_table)
